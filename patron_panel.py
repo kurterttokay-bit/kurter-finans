@@ -20,10 +20,10 @@ if st.session_state.giris_turu is None:
     sifre = st.text_input("Sistem Şifresini Giriniz", type="password")
     
     if st.button("Sisteme Giriş Yap"):
-        if sifre == "patron001":
+        if sifre == "patron125":
             st.session_state.giris_turu = "PATRON"
             st.rerun()
-        elif sifre == "muhasebe001":
+        elif sifre == "muhasebe007":
             st.session_state.giris_turu = "MUHASEBE"
             st.rerun()
         else:
@@ -86,3 +86,4 @@ elif st.session_state.giris_turu == "PATRON":
     if st.button("Güvenli Çıkış"):
         st.session_state.giris_turu = None
         st.rerun()
+
