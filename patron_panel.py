@@ -41,7 +41,7 @@ if st.session_state.giris_turu == "MUHASEBE":
             if st.form_submit_button("Kaydet"):
                 new_row = pd.DataFrame([{"Tanim": t, "Tutar": m, "Vade": str(v), "Revize": False}])
                 updated_df = pd.concat([df, new_row], ignore_index=True)
-                conn.update(spreadsheet=sheet_url, data=updated_df)
+                conn.create(spreadsheet=sheet_url, data=updated_df)
                 st.success("Kaydedildi!")
                 st.rerun()
 
@@ -85,3 +85,4 @@ elif st.session_state.giris_turu == "PATRON":
         st.bar_chart(aktif_df.set_index('Vade')['Tutar'])
     else:
         st.info("Gelecek vadeli ödeme kaydı bulunamadı.")
+
