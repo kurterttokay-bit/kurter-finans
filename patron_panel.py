@@ -2,48 +2,60 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
-# Mobil başlık ayarı
-st.set_page_config(page_title="Kurter Finans Panel", layout="centered")
+st.set_page_config(page_title="Kurter Finans Mobil", layout="wide")
 
-st.title("💼 Patron Finans Paneli")
+# --- SOL PANEL: VERİ GİRİŞİ (Muhasebeci İçin) ---
+st.sidebar.title("🛠 Muhasebe Paneli")
+sifre = st.sidebar.text_input("Giriş Şifresi", type="password")
 
-# BOŞ DOSYA KONTROLÜ VE ÖRNEK VERİ
-def verileri_hazirla():
-    try:
-        df = pd.read_csv('veriler.csv')
-        if df.empty or len(df.columns) < 2:
-            raise ValueError
-    except:
-        # Dosya boşsa patrona ayıp olmasın, örnek veri gösterelim
-        data = {
-            'Tanim': ['Örnek Mal Alımı', 'Örnek Lojistik'],
-            'Tutar': [100000, 50000],
-            'Vade': [(datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'), 
-                     (datetime.now() + timedelta(days=60)).strftime('%Y-%m-%d')]
-        }
-        df = pd.DataFrame(data)
-    return df
+# Verileri tutmak için session_state kullanalım (Şimdilik tarayıcı bazlı)
+if 'finans_verileri' not in st.session_state:
+    st.session_state.finans_verileri = []
 
-df = verileri_hazirla()
-df['Vade'] = pd.to_datetime(df['Vade'])
+if sifre == "1234": # Buraya istediğin bir şifreyi koyabilirsin
+    st.sidebar.success("Giriş Başarılı")
+    with st.sidebar.form("yeni_islem"):
+        tanim = st.text_input("İşlem Tanımı")
+        tutar = st.number_input("Tutar", min_value=0.0)
+        vade = st.date_input("Vade Tarihi")
+        ekle = st.form_submit_button("Listeye Ekle")
+        
+        if ekle:
+            st.session_state.finans_verileri.append({
+                "Tanim": tanim, "Tutar": tutar, "Vade": vade
+            })
+    
+    if st.sidebar.button("Listeyi Temizle"):
+        st.session_state.finans_verileri = []
+else:
+    st.sidebar.warning("Veri girmek için şifre gereklidir.")
 
-# HESAPLAMALAR
-bugun = datetime.now()
-df['Gun'] = (df['Vade'] - bugun).dt.days
-toplam = df['Tutar'].sum()
-ort_gun = (df['Tutar'] * df['Gun']).sum() / toplam if toplam != 0 else 0
-ort_vade = bugun + timedelta(days=ort_gun)
+# --- ANA EKRAN: ANALİZ (Patron İçin) ---
+st.title("💼 Finansal Durum Özeti")
 
-# DASHBOARD KARTLARI
-st.divider()
-c1, c2 = st.columns(2)
-c1.metric("Toplam Borç", f"{toplam:,.2f} TL")
-c2.metric("Ortalama Vade", f"{round(ort_gun)} Gün")
+if st.session_state.finans_verileri:
+    df = pd.DataFrame(st.session_state.finans_verileri)
+    df['Vade'] = pd.to_datetime(df['Vade'])
+    bugun = datetime.now()
+    
+    # Hesaplamalar
+    df['Gun'] = (df['Vade'] - bugun).dt.days
+    toplam = df['Tutar'].sum()
+    ort_gun = (df['Tutar'] * df['Gun']).sum() / toplam if toplam != 0 else 0
+    ort_vade = bugun + timedelta(days=ort_gun)
 
-st.info(f"📅 **Kritik Ödeme Tarihi:** {ort_vade.strftime('%d.%m.%Y')}")
+    # Özet Kartlar
+    c1, c2 = st.columns(2)
+    c1.metric("Toplam Yük", f"{toplam:,.2f} TL")
+    c2.metric("Ortalama Vade", f"{round(ort_gun)} Gün")
+    
+    st.success(f"🗓 **Ağırlıklı Ödeme Tarihi:** {ort_vade.strftime('%d.%m.%Y')}")
 
-# GRAFİK
-st.write("### 📈 Ödeme Dağılımı")
-st.bar_chart(df.set_index('Vade')['Tutar'])
-
-st.caption("Muhasebeci veriler.csv dosyasını doldurduğunda burası otomatik güncellenir.")
+    # Grafik ve Tablo
+    st.write("### 📈 Ödeme Takvimi")
+    st.bar_chart(df.set_index('Vade')['Tutar'])
+    
+    with st.expander("Tüm Listeyi Gör"):
+        st.table(df[['Tanim', 'Tutar', 'Vade']])
+else:
+    st.info("Henüz veri girişi yapılmadı. Sol taraftaki Muhasebe Paneli'ni kullanın.")
