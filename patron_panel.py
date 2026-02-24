@@ -1,9 +1,15 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+from streamlit_gsheets import GSheetsConnection
 
 # Sayfa ayarları
 st.set_page_config(page_title="Kurter Finans Sistemi", layout="centered")
+
+# --- GOOGLE SHEETS BAĞLANTISI ---
+# Senin verdiğin Sheet ID: 1gow0J5IA0GaB-BjViSKGbIxoZije0klFGgvDWYHdcNA
+sheet_url = "https://docs.google.com/spreadsheets/d/1gow0J5IA0GaB-BjViSKGbIxoZije0klFGgvDWYHdcNA/edit#gid=0"
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- GÜVENLİK VE GİRİŞ SİSTEMİ ---
 if 'giris_turu' not in st.session_state:
@@ -14,43 +20,34 @@ if st.session_state.giris_turu is None:
     sifre = st.text_input("Sistem Şifresini Giriniz", type="password")
     
     if st.button("Sisteme Giriş Yap"):
-        if sifre == "Mustafa125": # Patron Şifresi
+        if sifre == "patron001":
             st.session_state.giris_turu = "PATRON"
             st.rerun()
-        elif sifre == "muhasebe007": # Muhasebe Şifresi
+        elif sifre == "muhasebe001":
             st.session_state.giris_turu = "MUHASEBE"
             st.rerun()
         else:
             st.error("Hatalı Şifre!")
     st.stop()
 
-# --- VERİ ALTYAPISI (Google Sheets Entegrasyonu Hazır) ---
-# Buraya Google Sheets bağlandığında kod eklenecek, şimdilik kalıcı olması için veriler.csv kullanalım
-def verileri_oku():
-    try:
-        return pd.read_csv('veriler.csv')
-    except:
-        return pd.DataFrame(columns=['Tanim', 'Tutar', 'Vade'])
-
-def veri_kaydet(yeni_df):
-    yeni_df.to_csv('veriler.csv', index=False)
-
-# --- PANEL 1: MUHASEBE GİRİŞ PANELİ ---
+# --- PANEL 1: MUHASEBE VERİ GİRİŞİ ---
 if st.session_state.giris_turu == "MUHASEBE":
     st.title("📝 Muhasebe Veri Girişi")
-    st.info("Buradan girilen veriler anlık olarak Patron Paneli'ne yansır.")
     
     with st.form("veri_formu"):
-        t = st.text_input("İşlem Tanımı (Örn: Çek No / Firma)")
+        t = st.text_input("İşlem Tanımı (Firma/Çek No)")
         m = st.number_input("Meblağ", min_value=0.0, step=100.0)
         v = st.date_input("Vade Tarihi")
         
         if st.form_submit_button("Sisteme İşle"):
-            mevcut_df = verileri_oku()
-            yeni_satir = pd.DataFrame([[t, m, v]], columns=['Tanim', 'Tutar', 'Vade'])
-            guncel_df = pd.concat([mevcut_df, yeni_satir], ignore_index=True)
-            veri_kaydet(guncel_df)
-            st.success("Veri başarıyla işlendi ve Patron Paneli güncellendi!")
+            # Mevcut veriyi çek
+            existing_data = conn.read(spreadsheet=sheet_url, usecols=[0,1,2])
+            # Yeni satırı hazırla
+            new_row = pd.DataFrame([{"Tanim": t, "Tutar": m, "Vade": str(v)}])
+            # Birleştir ve G-Sheet'e geri yaz
+            updated_df = pd.concat([existing_data, new_row], ignore_index=True)
+            conn.update(spreadsheet=sheet_url, data=updated_df)
+            st.success("Veri 'Muhasebe Data' dosyasına başarıyla kaydedildi!")
 
     if st.button("Sistemden Çıkış"):
         st.session_state.giris_turu = None
@@ -60,7 +57,9 @@ if st.session_state.giris_turu == "MUHASEBE":
 elif st.session_state.giris_turu == "PATRON":
     st.title("📈 Finansal Analiz (Patron)")
     
-    df = verileri_oku()
+    # Google Sheet'ten verileri canlı oku
+    df = conn.read(spreadsheet=sheet_url)
+    
     if not df.empty:
         df['Vade'] = pd.to_datetime(df['Vade'])
         bugun = datetime.now()
@@ -70,7 +69,6 @@ elif st.session_state.giris_turu == "PATRON":
         ort_gun = (df['Tutar'] * df['Gun']).sum() / toplam if toplam != 0 else 0
         ort_vade = bugun + timedelta(days=ort_gun)
         
-        # Patron Kartları
         c1, c2 = st.columns(2)
         c1.metric("Toplam Yük", f"{toplam:,.2f} TL")
         c2.metric("Ağırlıklı Ort. Vade", f"{round(ort_gun)} Gün")
@@ -79,8 +77,11 @@ elif st.session_state.giris_turu == "PATRON":
         
         st.write("### 📊 Vade Dağılımı")
         st.bar_chart(df.set_index('Vade')['Tutar'])
+        
+        with st.expander("Tüm Listeyi Gör"):
+            st.dataframe(df)
     else:
-        st.warning("Henüz muhasebe tarafından veri girişi yapılmamış.")
+        st.warning("Google Sheet şu an boş.")
 
     if st.button("Güvenli Çıkış"):
         st.session_state.giris_turu = None
