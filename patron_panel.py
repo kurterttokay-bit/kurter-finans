@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import plotly.express as px
 from streamlit_gsheets import GSheetsConnection
 
 # Sayfa Ayarları
@@ -25,85 +24,73 @@ if st.session_state.giris_turu is None:
         st.rerun()
     st.stop()
 
-# --- VERİ ÇEKME VE FORMATLAMA ---
+# --- VERİ ÇEKME VE TEMİZLEME ---
 @st.cache_data(ttl=0)
 def get_clean_data():
     try:
-        data = conn.read(spreadsheet=edit_url, ttl=0)
-        data.columns = [c.strip().replace(" ", "_") for c in data.columns]
+        # Sadece A'dan F'ye kadar olan ana sütunları oku (Diğer çöpleri görme!)
+        data = conn.read(spreadsheet=edit_url, ttl=0, usecols=[0,1,2,3,4,5])
+        # Başlıkları senin istediğin gibi "Firma Adı" formatına zorla
+        data.columns = ["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]
         
         if not data.empty:
-            # Arka planda tarih objesine çeviriyoruz (Hesaplamalar için)
-            data['Vade_Obj'] = pd.to_datetime(data['Vade'], errors='coerce').dt.date
-            # Ekranda görünecek format: GG.AA.YYYY
-            data['Vade_TR'] = pd.to_datetime(data['Vade'], errors='coerce').dt.strftime('%d.%m.%Y')
+            # Tarihi saatsiz temizle
+            data['Vade_Hesap'] = pd.to_datetime(data['Vade'], errors='coerce').dt.date
             data['Tutar'] = pd.to_numeric(data['Tutar'], errors='coerce').fillna(0)
         return data
-    except:
-        return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame(columns=["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"])
 
 df = get_clean_data()
 bugun = datetime.now().date()
+
+# --- ORTAK SIDEBAR ---
+with st.sidebar:
+    if st.button("🔴 Oturumu Kapat", use_container_width=True):
+        st.session_state.giris_turu = None
+        st.rerun()
+    st.divider()
 
 # --- PATRON PANELİ ---
 if st.session_state.giris_turu == "PATRON":
     st.title("👑 Yönetim Paneli")
     
-    with st.sidebar:
-        if st.button("🔴 Oturumu Kapat", use_container_width=True):
-            st.session_state.giris_turu = None
-            st.rerun()
-        st.divider()
-        firmalar = ["TÜMÜ"] + sorted(df['Firma_Adi'].dropna().unique().tolist()) if not df.empty else ["TÜMÜ"]
-        secili_firma = st.selectbox("🎯 Cari Seç", firmalar)
-
-    # --- ALERT SİSTEMİ (3 GÜN KALA KIRMIZI) ---
+    # ALERT (GG.AA.YYYY Formatında Görünüm)
     if not df.empty:
-        yaklasanlar = df[(df['Vade_Obj'] >= bugun) & (df['Vade_Obj'] <= bugun + timedelta(days=7))].copy()
-        if not yaklasanlar.empty:
-            for _, row in yaklasanlar.iterrows():
-                kalan_gun = (row['Vade_Obj'] - bugun).days
-                if kalan_gun == 3:
-                    st.error(f"🚨 **KRİTİK UYARI:** {row['Firma_Adi']} ödemesine son **3 GÜN**! | Vade: {row['Vade_TR']} | Tutar: {row['Tutar']:,.2f} TL")
-                elif kalan_gun <= 7:
-                    st.warning(f"⚠️ **Yaklaşan:** {row['Firma_Adi']} - **{kalan_gun} gün** kaldı. | Tarih: {row['Vade_TR']}")
+        yaklasanlar = df[(df['Vade_Hesap'] >= bugun) & (df['Vade_Hesap'] <= bugun + timedelta(days=7))].copy()
+        for _, row in yaklasanlar.iterrows():
+            kalan = (row['Vade_Hesap'] - bugun).days
+            tr_tarih = row['Vade_Hesap'].strftime('%d.%m.%Y')
+            if kalan == 3:
+                st.error(f"🚨 **KRİTİK:** {row['Firma Adı']} | Vade: {tr_tarih} | Tutar: {row['Tutar']:,.2f} TL")
+            else:
+                st.warning(f"⚠️ **Yaklaşan:** {row['Firma Adı']} | {kalan} gün kaldı ({tr_tarih})")
 
-    # --- ANALİZ ---
-    if not df.empty:
-        f_df = df if secili_firma == "TÜMÜ" else df[df['Firma_Adi'] == secili_firma]
-        aktif_df = f_df[f_df['Vade_Obj'] >= bugun].copy()
-        
-        if not aktif_df.empty:
-            st.plotly_chart(px.area(aktif_df.sort_values('Vade_Obj'), x='Vade_Obj', y='Tutar', title="Ödeme Akışı"), use_container_width=True)
-            
-            # Tabloyu Türkiye formatıyla gösteriyoruz
-            display_df = aktif_df.sort_values('Vade_Obj')[['Firma_Adi', 'Evrak_Tipi', 'Banka', 'Tutar', 'Vade_TR', 'Aciklama']]
-            display_df.columns = ['Firma Adı', 'Evrak Tipi', 'Banka', 'Tutar', 'Vade Tarihi', 'Açıklama']
-            st.dataframe(display_df, use_container_width=True)
+    # CARİ FİLTRE VE TABLO
+    firmalar = ["TÜMÜ"] + sorted(df['Firma Adı'].dropna().unique().tolist())
+    secili = st.sidebar.selectbox("🎯 Cari Seç", firmalar)
+    
+    f_df = df if secili == "TÜMÜ" else df[df['Firma Adı'] == secili]
+    # Sadece GG.AA.YYYY formatında tablo gösterimi
+    f_df['Vade'] = pd.to_datetime(f_df['Vade_Hesap']).dt.strftime('%d.%m.%Y')
+    st.dataframe(f_df[["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]], use_container_width=True)
 
 # --- MUHASEBE PANELİ ---
 elif st.session_state.giris_turu == "MUHASEBE":
     st.title("📝 Veri Girişi")
-    
-    with st.form("input_form", clear_on_submit=True):
+    with st.form("yeni_kayit", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        f_in = c1.text_input("Firma Adı").upper()
-        b_in = c1.text_input("Banka").upper()
-        e_in = c2.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
-        t_in = c2.number_input("Tutar", min_value=0.0)
-        v_in = st.date_input("Vade Seç (GG/AA/YYYY)") # Takvim arayüzü
+        f = c1.text_input("Firma Adı").upper()
+        b = c1.text_input("Banka").upper()
+        e = c2.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
+        t = c2.number_input("Tutar", min_value=0.0)
+        v = st.date_input("Vade")
         
-        if st.form_submit_button("Sisteme Kaydet"):
-            # Sheets'e YYYY-MM-DD olarak kaydediyoruz (Standart bozulmasın)
-            new_row = pd.DataFrame([{
-                "Firma_Adi": f_in,
-                "Evrak_Tipi": e_in,
-                "Banka": b_in,
-                "Tutar": t_in,
-                "Vade": v_in.isoformat(), # Saatsiz saf tarih (2026-03-03 gibi)
-                "Aciklama": ""
-            }])
-            updated = pd.concat([df, new_row], ignore_index=True)
+        if st.form_submit_button("Kaydet"):
+            # SADECE İLK 6 SÜTUNA YAZ (Sheets'i kirletme!)
+            new_row = pd.DataFrame([[f, e, b, t, v.isoformat(), ""]], 
+                                   columns=["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"])
+            updated = pd.concat([df[["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]], new_row], ignore_index=True)
             conn.update(spreadsheet=edit_url, data=updated)
-            st.success(f"Kayıt Başarılı! Vade: {v_in.strftime('%d.%m.%Y')}")
+            st.success("Kaydedildi!")
             st.rerun()
