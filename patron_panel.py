@@ -1,32 +1,29 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go # Daha şık grafikler için
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# Sayfa Ayarları - Geniş ve Premium Görünüm
-st.set_page_config(page_title="Yapdoksan Finans | Executive Dashboard", layout="wide", initial_sidebar_state="expanded")
+# Görsellik kütüphanesini kontrol et (Patlamayı önler)
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    has_plotly = True
+except ImportError:
+    has_plotly = False
 
-# --- GOOGLE SHEETS BAĞLANTISI ---
+# Sayfa Ayarları
+st.set_page_config(page_title="Yapdoksan Finans | Yönetim", layout="wide")
+
+# --- BAĞLANTI ---
 edit_url = "https://docs.google.com/spreadsheets/d/1gow0J5IA0GaB-BjViSKGbIxoZije0klFGgvDWYHdcNA/edit#gid=0"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- CUSTOM CSS (Patron Güzellemesi) ---
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    div[data-testid="stExpander"] { background-color: white; border-radius: 10px; }
-    </style>
-    """, unsafe_allow_name_with_html=True)
-
-# --- GÜVENLİK (Aynı Mantık) ---
+# --- GÜVENLİK ---
 if 'giris_turu' not in st.session_state:
     st.session_state.giris_turu = None
 
 if st.session_state.giris_turu is None:
-    st.title("🏛️ Yapdoksan Finans Yönetim Merkezi")
+    st.title("🏛️ Yapdoksan Finans Yönetimi")
     sifre = st.text_input("Giriş Anahtarı", type="password")
     if st.button("Sistemi Aç"):
         if sifre == "patron125": st.session_state.giris_turu = "PATRON"
@@ -38,99 +35,77 @@ if st.session_state.giris_turu is None:
 # --- VERİ ÇEKME ---
 try:
     df = conn.read(spreadsheet=edit_url, ttl=0)
+    # Sütunları sayısal ve tarihsel formata zorla
     df['Tutar'] = pd.to_numeric(df['Tutar'], errors='coerce').fillna(0)
     df['Vade'] = pd.to_datetime(df['Vade'], errors='coerce')
 except:
-    st.error("Veri bağlantısı kurulamadı!")
-    st.stop()
+    df = pd.DataFrame(columns=['Firma_Adi', 'Evrak_Tipi', 'Banka', 'Tutar', 'Vade', 'Aciklama'])
 
-# --- MUHASEBE PANELİ (Hızlı Giriş Odaklı) ---
+# --- MUHASEBE PANELİ ---
 if st.session_state.giris_turu == "MUHASEBE":
-    st.title("📥 Veri İşleme Merkezi")
-    # ... (Buradaki kod öncekiyle aynı, sadece muhasebeci işini yapsın) ...
+    st.title("📥 Muhasebe Veri Girişi")
+    with st.form("kayit"):
+        c1, c2 = st.columns(2)
+        firma = c1.text_input("Firma/Cari Adı").upper()
+        banka = c1.text_input("Banka")
+        tutar = c2.number_input("Tutar (TL)", min_value=0.0)
+        vade = c2.date_input("Vade")
+        evrak = st.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
+        not_ = st.text_input("Açıklama")
+        if st.form_submit_button("Sisteme İşle"):
+            new_row = pd.DataFrame([{"Firma_Adi": firma, "Evrak_Tipi": evrak, "Banka": banka, "Tutar": tutar, "Vade": str(vade), "Aciklama": not_}])
+            df = pd.concat([df, new_row], ignore_index=True)
+            conn.update(spreadsheet=edit_url, data=df)
+            st.success("Kayıt Alındı.")
+            st.cache_data.clear()
+            st.rerun()
 
-# --- PATRON PANELİ (Görsel Şölen) ---
+# --- PATRON PANELİ (GÜZELLEŞTİRİLMİŞ) ---
 elif st.session_state.giris_turu == "PATRON":
-    st.markdown(f"# 👑 Finansal Strateji Paneli")
-    st.write(f"Hoş geldin Patron. Bugünün özeti ve gelecek risk projeksiyonu aşağıdadır.")
-
-    if not df.empty:
+    st.title("👑 Yönetim Paneli")
+    
+    if not df.empty and 'Vade' in df.columns:
         bugun = pd.to_datetime(datetime.now().date())
         aktif_df = df[df['Vade'] >= bugun].copy()
-        aktif_df['Gun'] = (aktif_df['Vade'] - bugun).dt.days
-
-        # Kenar Çubuğu Filtreleri
-        st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
-        st.sidebar.title("Kontrol Kulesi")
-        secili_firma = st.sidebar.selectbox("🎯 Odaklanılacak Cari", ["TÜM PORTFÖY"] + sorted(df['Firma_Adi'].unique().tolist()))
         
-        if secili_firma != "TÜM PORTFÖY":
+        # Filtreleme
+        secili_firma = st.sidebar.selectbox("🎯 Odaklan", ["TÜMÜ"] + sorted(df['Firma_Adi'].unique().tolist()))
+        if secili_firma != "TÜMÜ":
             aktif_df = aktif_df[aktif_df['Firma_Adi'] == secili_firma]
 
-        # --- 1. ÜST METRİKLER (KPI) ---
-        toplam_yuk = aktif_df['Tutar'].sum()
-        ort_gun = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / toplam_yuk if toplam_yuk > 0 else 0
-        en_yakin_odeme = aktif_df['Vade'].min()
-
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("Toplam Borç Yükü", f"{toplam_yuk:,.0f} TL", delta_color="inverse")
-        kpi2.metric("Ağırlıklı Vade", f"{int(ort_gun)} Gün")
-        kpi3.metric("En Yakın Ödeme", en_yakin_odeme.strftime('%d.%m.%Y') if not aktif_df.empty else "-")
-        kpi4.metric("Aktif Evrak", f"{len(aktif_df)} Adet")
-
-        st.markdown("---")
-
-        # --- 2. GÖRSEL ANALİZLER ---
-        col_main, col_side = st.columns([2, 1])
-
-        with col_main:
-            st.subheader("🚀 Nakit Akış Projeksiyonu (Kümülatif)")
-            # Tarihe göre sıralayıp kümülatif toplam alıyoruz
-            cum_df = aktif_df.sort_values('Vade').copy()
-            cum_df['Kumulatif_Tutar'] = cum_df['Tutar'].cumsum()
+        if not aktif_df.empty:
+            # Üst Metrikler
+            total = aktif_df['Tutar'].sum()
+            aktif_df['Gun'] = (aktif_df['Vade'] - bugun).dt.days
+            ort_vade = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / total if total > 0 else 0
             
-            fig_area = px.area(cum_df, x='Vade', y='Kumulatif_Tutar', 
-                               title="Zaman İçinde Biriken Ödeme Yükü",
-                               labels={'Kumulatif_Tutar': 'Toplam Çıkış (TL)'},
-                               color_discrete_sequence=['#1f77b4'])
-            fig_area.update_layout(hovermode="x unified")
-            st.plotly_chart(fig_area, use_container_width=True)
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Toplam Yük", f"{total:,.0f} TL")
+            k2.metric("Ağırlıklı Vade", f"{int(ort_vade)} Gün")
+            k3.metric("Kayıt Sayısı", len(aktif_df))
 
-        with col_side:
-            st.subheader("🏢 Cari Dağılımı")
-            fig_donut = px.pie(aktif_df, values='Tutar', names='Firma_Adi', hole=.5,
-                               color_discrete_sequence=px.colors.qualitative.T10)
-            fig_donut.update_traces(textinfo='percent+label')
-            st.plotly_chart(fig_donut, use_container_width=True)
+            st.divider()
 
-        # --- 3. BANKA VE VADE ANALİZİ ---
-        st.markdown("---")
-        c1, c2 = st.columns(2)
+            if has_plotly:
+                c_left, c_right = st.columns(2)
+                # Kümülatif Nakit Akışı (Patronun en sevdiği)
+                cum_df = aktif_df.sort_values('Vade').copy()
+                cum_df['Kumulatif'] = cum_df['Tutar'].cumsum()
+                fig_area = px.area(cum_df, x='Vade', y='Kumulatif', title="Gelecek Nakit Çıkış Grafiği")
+                c_left.plotly_chart(fig_area, use_container_width=True)
+                
+                # Banka Dağılımı
+                fig_pie = px.pie(aktif_df, values='Tutar', names='Banka', hole=.4, title="Banka Risk Dağılımı")
+                c_right.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.warning("Görsel grafikler için lütfen requirements.txt dosyasına 'plotly' ekleyin.")
+                st.bar_chart(aktif_df.set_index('Vade')['Tutar'])
+            
+            st.subheader("📋 Ödeme Listesi")
+            st.dataframe(aktif_df[['Firma_Adi', 'Banka', 'Tutar', 'Vade', 'Aciklama']].sort_values('Vade'), use_container_width=True)
+        else:
+            st.info("Gelecek ödemeniz bulunmuyor.")
 
-        with c1:
-            st.subheader("🏦 Banka Pozisyonları")
-            banka_data = aktif_df.groupby('Banka')['Tutar'].sum().sort_values(ascending=True)
-            fig_banka = px.bar(banka_data, orientation='h', text_auto='.2s',
-                               color_discrete_sequence=['#2ecc71'])
-            st.plotly_chart(fig_banka, use_container_width=True)
-
-        with c2:
-            st.subheader("🗓️ Aylık Ödeme Takvimi")
-            aktif_df['Ay'] = aktif_df['Vade'].dt.strftime('%Y-%m')
-            aylik_data = aktif_df.groupby('Ay')['Tutar'].sum().reset_index()
-            fig_ay = px.bar(aylik_data, x='Ay', y='Tutar', text_auto='.2s',
-                            color_discrete_sequence=['#e74c3c'])
-            st.plotly_chart(fig_ay, use_container_width=True)
-
-        # --- 4. AKILLI TABLO ---
-        with st.expander("🔍 Tüm Evrak Detaylarını İncele"):
-            st.dataframe(aktif_df[['Firma_Adi', 'Banka', 'Evrak_Tipi', 'Tutar', 'Vade', 'Aciklama']].sort_values('Vade'), 
-                         use_container_width=True)
-
-    else:
-        st.balloons()
-        st.success("Tebrikler Patron! Gelecek ödemen bulunmuyor. Kasa güvende.")
-
-if st.sidebar.button("🔴 Oturumu Kapat"):
+if st.sidebar.button("Güvenli Çıkış"):
     st.session_state.giris_turu = None
     st.rerun()
