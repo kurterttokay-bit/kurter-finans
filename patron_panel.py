@@ -16,7 +16,7 @@ if 'giris_turu' not in st.session_state:
     st.session_state.giris_turu = None
 
 if st.session_state.giris_turu is None:
-    st.title("🏛️ Yapdoksan Giriş")
+    st.title("🔒 Yapdoksan Giriş")
     sifre = st.text_input("Şifre", type="password")
     if st.button("Giriş Yap"):
         if sifre == "patron125": st.session_state.giris_turu = "PATRON"
@@ -27,7 +27,6 @@ if st.session_state.giris_turu is None:
 
 # --- VERİ ÇEKME ---
 try:
-    # Veriyi çek ve sütun başlıklarını temizle
     df = conn.read(spreadsheet=edit_url, ttl=0)
     df.columns = [c.strip() for c in df.columns]
 except:
@@ -36,15 +35,20 @@ except:
 # --- PATRON PANELİ ---
 if st.session_state.giris_turu == "PATRON":
     st.title("👑 Yönetim Paneli")
-
-    # --- HIZLI KUR GÖSTERİMİ (SHEETS'TEN OKUMA) ---
-    # Eğer Sheets'te bir yerde kur varsa oradan okuruz, yoksa statik geçeriz.
-    # Şimdilik hızı kesmemek için metrikleri sadeleştirdik.
     
     col_name = "Firma Adı"
     if col_name in df.columns:
-        firmalar = ["TÜMÜ"] + sorted(df[col_name].unique().tolist())
-        secili_firma = st.sidebar.selectbox("🎯 Cari Seç", firmalar)
+        # --- SIDEBAR DİZİLİMİ ---
+        with st.sidebar:
+            st.header("⚙️ Kontrol Paneli")
+            firmalar = ["TÜMÜ"] + sorted(df[col_name].unique().tolist())
+            secili_firma = st.selectbox("🎯 Cari Seç", firmalar)
+            
+            st.divider() # Görsel ayrım
+            
+            if st.button("🔴 Oturumu Kapat", use_container_width=True):
+                st.session_state.giris_turu = None
+                st.rerun()
         
         if not df.empty:
             df['Tutar'] = pd.to_numeric(df['Tutar'], errors='coerce').fillna(0)
@@ -78,6 +82,13 @@ if st.session_state.giris_turu == "PATRON":
 # --- MUHASEBE PANELİ ---
 elif st.session_state.giris_turu == "MUHASEBE":
     st.title("📝 Veri Girişi")
+    
+    with st.sidebar:
+        st.header("⚙️ Muhasebe Menü")
+        if st.button("🔴 Oturumu Kapat", use_container_width=True):
+            st.session_state.giris_turu = None
+            st.rerun()
+
     with st.form("muhasebe_form"):
         f_adi = st.text_input("Firma Adı").upper()
         e_tipi = st.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
