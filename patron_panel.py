@@ -28,69 +28,82 @@ if st.session_state.giris_turu is None:
 @st.cache_data(ttl=0)
 def get_clean_data():
     try:
-        # Sadece A'dan F'ye kadar olan ana sütunları oku (Diğer çöpleri görme!)
+        # Sadece A-F arası 6 sütunu oku, Sheets'teki o sağa saçılan çöpleri görmezden gel
         data = conn.read(spreadsheet=edit_url, ttl=0, usecols=[0,1,2,3,4,5])
-        # Başlıkları senin istediğin gibi "Firma Adı" formatına zorla
         data.columns = ["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]
         
         if not data.empty:
-            # Tarihi saatsiz temizle
             data['Vade_Hesap'] = pd.to_datetime(data['Vade'], errors='coerce').dt.date
             data['Tutar'] = pd.to_numeric(data['Tutar'], errors='coerce').fillna(0)
+            data['Firma Adı'] = data['Firma Adı'].str.strip().str.upper() # Boşlukları temizle ve büyüt
         return data
-    except Exception as e:
+    except:
         return pd.DataFrame(columns=["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"])
 
 df = get_clean_data()
 bugun = datetime.now().date()
 
-# --- ORTAK SIDEBAR ---
-with st.sidebar:
-    if st.button("🔴 Oturumu Kapat", use_container_width=True):
-        st.session_state.giris_turu = None
-        st.rerun()
-    st.divider()
-
 # --- PATRON PANELİ ---
 if st.session_state.giris_turu == "PATRON":
     st.title("👑 Yönetim Paneli")
     
-    # ALERT (GG.AA.YYYY Formatında Görünüm)
+    # ALERT (3 Gün Kırmızı, 7 Gün Sarı)
     if not df.empty:
         yaklasanlar = df[(df['Vade_Hesap'] >= bugun) & (df['Vade_Hesap'] <= bugun + timedelta(days=7))].copy()
         for _, row in yaklasanlar.iterrows():
             kalan = (row['Vade_Hesap'] - bugun).days
             tr_tarih = row['Vade_Hesap'].strftime('%d.%m.%Y')
-            if kalan == 3:
+            if kalan <= 3:
                 st.error(f"🚨 **KRİTİK:** {row['Firma Adı']} | Vade: {tr_tarih} | Tutar: {row['Tutar']:,.2f} TL")
             else:
                 st.warning(f"⚠️ **Yaklaşan:** {row['Firma Adı']} | {kalan} gün kaldı ({tr_tarih})")
 
-    # CARİ FİLTRE VE TABLO
+    # CARİ FİLTRE
     firmalar = ["TÜMÜ"] + sorted(df['Firma Adı'].dropna().unique().tolist())
     secili = st.sidebar.selectbox("🎯 Cari Seç", firmalar)
     
     f_df = df if secili == "TÜMÜ" else df[df['Firma Adı'] == secili]
-    # Sadece GG.AA.YYYY formatında tablo gösterimi
-    f_df['Vade'] = pd.to_datetime(f_df['Vade_Hesap']).dt.strftime('%d.%m.%Y')
-    st.dataframe(f_df[["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]], use_container_width=True)
+    f_df['Vade Gösterim'] = pd.to_datetime(f_df['Vade_Hesap']).dt.strftime('%d.%m.%Y')
+    
+    st.dataframe(f_df[["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade Gösterim", "Açıklama"]].sort_values('Firma Adı'), use_container_width=True)
 
-# --- MUHASEBE PANELİ ---
+# --- MUHASEBE PANELİ (OTOMATİK ÖNERİLİ) ---
 elif st.session_state.giris_turu == "MUHASEBE":
     st.title("📝 Veri Girişi")
+    
+    # Mevcut firma listesini hazırla
+    mevcut_firmalar = sorted(df['Firma Adı'].dropna().unique().tolist()) if not df.empty else []
+    
     with st.form("yeni_kayit", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        f = c1.text_input("Firma Adı").upper()
-        b = c1.text_input("Banka").upper()
-        e = c2.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
-        t = c2.number_input("Tutar", min_value=0.0)
-        v = st.date_input("Vade")
+        st.subheader("Evrak Detayları")
         
-        if st.form_submit_button("Kaydet"):
-            # SADECE İLK 6 SÜTUNA YAZ (Sheets'i kirletme!)
-            new_row = pd.DataFrame([[f, e, b, t, v.isoformat(), ""]], 
-                                   columns=["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"])
-            updated = pd.concat([df[["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]], new_row], ignore_index=True)
-            conn.update(spreadsheet=edit_url, data=updated)
-            st.success("Kaydedildi!")
-            st.rerun()
+        # OTOMATİK TAMAMLAMA ÖZELLİĞİ: 
+        # Streamlit'te text_input yerine selectbox'ın 'editable' benzeri bir mantığını kullanıyoruz.
+        # En pratik ve hatasız yol: listeye "YENİ FİRMA EKLE" seçeneği koymak veya datalist mantığı.
+        # Senin için en temizi: Firma adını bir 'selectbox' içine alıp, en üste boşluk bırakmak.
+        
+        f_adi = st.selectbox("Firma Adı (Listeden seçin veya listede yoksa aşağıya yazın)", [""] + mevcut_firmalar)
+        f_yeni = st.text_input("Yeni Firma (Eğer listede yoksa buraya yazın)")
+        
+        # Hangi ismi kullanacağımıza karar verelim
+        final_firma = f_yeni.upper().strip() if f_yeni else f_adi
+        
+        c1, c2 = st.columns(2)
+        b_adi = c1.text_input("Banka").upper()
+        e_tipi = c1.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
+        tutar = c2.number_input("Tutar", min_value=0.0, step=100.0)
+        vade = c2.date_input("Vade Tarihi")
+        not_ = st.text_input("Açıklama")
+        
+        if st.form_submit_button("Sisteme Kaydet"):
+            if not final_firma or tutar <= 0:
+                st.error("Lütfen Firma Adı ve Tutar alanlarını doldurun!")
+            else:
+                new_row = pd.DataFrame([[final_firma, e_tipi, b_adi, tutar, vade.isoformat(), not_]], 
+                                       columns=["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"])
+                
+                # Temiz veri setine ekle ve güncelle
+                updated = pd.concat([df[["Firma Adı", "Evrak Tipi", "Banka", "Tutar", "Vade", "Açıklama"]], new_row], ignore_index=True)
+                conn.update(spreadsheet=edit_url, data=updated)
+                st.success(f"{final_firma} kaydı başarıyla eklendi!")
+                st.rerun()
