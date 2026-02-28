@@ -1,30 +1,13 @@
 import streamlit as st
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
 import plotly.express as px
 from streamlit_gsheets import GSheetsConnection
 
-# --- GERÇEK VE GÜNCEL KUR MOTORU ---
-def get_live_kurlar():
-    try:
-        # Daha stabil bir kaynak: Doviz.com
-        url = "https://www.doviz.com/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # Sitedeki span class'larını hedef alıyoruz
-        usd = soup.find("span", {"data-column": "mevcut", "data-row": "USD"}).text.strip()
-        eur = soup.find("span", {"data-column": "mevcut", "data-row": "EUR"}).text.strip()
-        return {"USD": usd, "EUR": eur}
-    except Exception as e:
-        # Eğer bu da patlarsa hata mesajını gör ki "salladın" demeyesin :D
-        return {"USD": "Veri Alınamadı", "EUR": "Veri Alınamadı"}
-
-# --- SAYFA VE BAĞLANTI AYARLARI ---
+# Sayfa Ayarları
 st.set_page_config(page_title="Yapdoksan Finans Pro", layout="wide")
+
+# --- BAĞLANTI ---
 edit_url = "https://docs.google.com/spreadsheets/d/1gow0J5IA0GaB-BjViSKGbIxoZije0klFGgvDWYHdcNA/edit#gid=0"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -35,17 +18,18 @@ if 'giris_turu' not in st.session_state:
 if st.session_state.giris_turu is None:
     st.title("🏛️ Yapdoksan Giriş")
     sifre = st.text_input("Şifre", type="password")
-    if st.button("Sistemi Aç"):
+    if st.button("Giriş Yap"):
         if sifre == "patron125": st.session_state.giris_turu = "PATRON"
         elif sifre == "muhasebe007": st.session_state.giris_turu = "MUHASEBE"
         else: st.error("Hatalı Şifre!")
         st.rerun()
     st.stop()
 
-# --- VERİ ÇEKME VE TEMİZLEME ---
+# --- VERİ ÇEKME ---
 try:
+    # Veriyi çek ve sütun başlıklarını temizle
     df = conn.read(spreadsheet=edit_url, ttl=0)
-    df.columns = [c.strip() for c in df.columns] # Başlıktaki boşlukları temizle
+    df.columns = [c.strip() for c in df.columns]
 except:
     df = pd.DataFrame(columns=['Firma Adı', 'Evrak Tipi', 'Banka', 'Tutar', 'Vade', 'Açıklama'])
 
@@ -53,21 +37,15 @@ except:
 if st.session_state.giris_turu == "PATRON":
     st.title("👑 Yönetim Paneli")
 
-    # Kurları ekrana bas
-    kurlar = get_live_kurlar()
-    c1, c2, c3 = st.columns([1, 1, 2])
-    c1.metric("💵 DOLAR", f"{kurlar['USD']} TL")
-    c2.metric("💶 EURO", f"{kurlar['EUR']} TL")
+    # --- HIZLI KUR GÖSTERİMİ (SHEETS'TEN OKUMA) ---
+    # Eğer Sheets'te bir yerde kur varsa oradan okuruz, yoksa statik geçeriz.
+    # Şimdilik hızı kesmemek için metrikleri sadeleştirdik.
     
-    # Sütun kontrolü ve Odaklan (Firma Adı)
     col_name = "Firma Adı"
     if col_name in df.columns:
         firmalar = ["TÜMÜ"] + sorted(df[col_name].unique().tolist())
-        with c3:
-            secili_firma = st.selectbox("🎯 Odaklan", firmalar)
-            
-        st.divider()
-
+        secili_firma = st.sidebar.selectbox("🎯 Cari Seç", firmalar)
+        
         if not df.empty:
             df['Tutar'] = pd.to_numeric(df['Tutar'], errors='coerce').fillna(0)
             df['Vade'] = pd.to_datetime(df['Vade'], errors='coerce')
@@ -76,23 +54,41 @@ if st.session_state.giris_turu == "PATRON":
             f_df = df if secili_firma == "TÜMÜ" else df[df[col_name] == secili_firma]
             aktif_df = f_df[f_df['Vade'] >= bugun].copy()
 
-            if not aktif_df.empty:
-                t_borc = aktif_df['Tutar'].sum()
-                # Ağırlıklı Ortalama Vade
+            # Üst Metrikler
+            t_borc = aktif_df['Tutar'].sum()
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Toplam Yük", f"{t_borc:,.2f} TL")
+            m2.metric("Evrak Sayısı", len(aktif_df))
+            
+            if t_borc > 0:
                 aktif_df['Gun'] = (aktif_df['Vade'] - bugun).dt.days
-                ort_v = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / t_borc if t_borc > 0 else 0
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Toplam Yük", f"{t_borc:,.2f} TL")
-                m2.metric("Ort. Vade", f"{int(ort_v)} Gün")
-                m3.metric("Evrak", len(aktif_df))
+                ort_v = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / t_borc
+                m3.metric("Ort. Vade", f"{int(ort_v)} Gün")
 
-                st.plotly_chart(px.area(aktif_df.sort_values('Vade'), x='Vade', y='Tutar'), use_container_width=True)
-                st.dataframe(aktif_df.sort_values('Vade'), use_container_width=True)
+            st.divider()
+            
+            # Grafik
+            st.plotly_chart(px.area(aktif_df.sort_values('Vade'), x='Vade', y='Tutar', title="Ödeme Takvimi"), use_container_width=True)
+            
+            # Tablo
+            st.dataframe(aktif_df.sort_values('Vade'), use_container_width=True)
     else:
-        st.error(f"DİKKAT: Google Sheets başlığın '{col_name}' olmalı!")
+        st.error(f"DİKKAT: Excel başlığın '{col_name}' olmalı!")
 
 # --- MUHASEBE PANELİ ---
 elif st.session_state.giris_turu == "MUHASEBE":
     st.title("📝 Veri Girişi")
-    # ... (Muhasebe giriş formu buraya gelecek, öncekiyle aynı mantık) ...
+    with st.form("muhasebe_form"):
+        f_adi = st.text_input("Firma Adı").upper()
+        e_tipi = st.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
+        b_adi = st.text_input("Banka").upper()
+        tutar = st.number_input("Tutar", min_value=0.0)
+        vade = st.date_input("Vade Tarihi")
+        not_ = st.text_input("Not")
+        
+        if st.form_submit_button("Kaydet"):
+            yeni_satir = pd.DataFrame([{"Firma Adı": f_adi, "Evrak Tipi": e_tipi, "Banka": b_adi, "Tutar": tutar, "Vade": str(vade), "Açıklama": not_}])
+            yeni_df = pd.concat([df, yeni_satir], ignore_index=True)
+            conn.update(spreadsheet=edit_url, data=yeni_df)
+            st.success("Kaydedildi!")
+            st.rerun()
