@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px # Grafik için ekledik
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # Sayfa Ayarları
-st.set_page_config(page_title="Yapdoksan Finans Pro", layout="wide")
+st.set_page_config(page_title="Yapdoksan Finans & Cari Analiz", layout="wide")
 
 # --- GOOGLE SHEETS BAĞLANTISI ---
 edit_url = "https://docs.google.com/spreadsheets/d/1gow0J5IA0GaB-BjViSKGbIxoZije0klFGgvDWYHdcNA/edit#gid=0"
@@ -15,7 +16,7 @@ if 'giris_turu' not in st.session_state:
     st.session_state.giris_turu = None
 
 if st.session_state.giris_turu is None:
-    st.title("🔒 Yapdoksan Finans Giriş")
+    st.title("🔒 Yapdoksan Finans Yönetimi")
     sifre = st.text_input("Şifre", type="password")
     if st.button("Giriş"):
         if sifre == "patron125": st.session_state.giris_turu = "PATRON"
@@ -27,104 +28,89 @@ if st.session_state.giris_turu is None:
 # --- VERİ ÇEKME ---
 try:
     df = conn.read(spreadsheet=edit_url, ttl=0)
-    # Sütunları kontrol et, yoksa oluştur (Geriye dönük uyumluluk için)
-    beklenen_sutunlar = ['Firma_Adi', 'Evrak_Tipi', 'Banka', 'Tutar', 'Vade', 'Aciklama']
-    for col in beklenen_sutunlar:
-        if col not in df.columns:
-            df[col] = ""
+    # Eksik sütunları otomatik tamamla
+    cols = ['Firma_Adi', 'Evrak_Tipi', 'Banka', 'Tutar', 'Vade', 'Aciklama']
+    for c in cols:
+        if c not in df.columns: df[c] = ""
 except:
     df = pd.DataFrame(columns=['Firma_Adi', 'Evrak_Tipi', 'Banka', 'Tutar', 'Vade', 'Aciklama'])
 
 # --- MUHASEBE PANELİ ---
 if st.session_state.giris_turu == "MUHASEBE":
-    st.title("📝 Cari & Evrak Veri Girişi")
-    
-    with st.form("yeni_kayit_formu"):
-        col1, col2 = st.columns(2)
-        with col1:
-            firma = st.text_input("Firma Adı (Cari)").upper()
-            evrak = st.selectbox("Evrak Tipi", ["Çek", "Senet", "Diğer"])
-            banka = st.text_input("Banka Adı")
-        with col2:
-            tutar = st.number_input("Meblağ (TL)", min_value=0.0, step=1000.0)
-            vade = st.date_input("Vade Tarihi")
-            aciklama = st.text_input("Not/Açıklama")
-            
-        submit = st.form_submit_button("Sisteme İşle")
+    st.title("📝 Veri Giriş Ekranı")
+    with st.form("kayit_formu"):
+        c1, c2, c3 = st.columns(3)
+        firma = c1.text_input("Firma Adı").upper()
+        evrak = c1.selectbox("Tip", ["Çek", "Senet", "Fatura"])
+        tutar = c2.number_input("Tutar (TL)", step=5000.0)
+        vade = c2.date_input("Vade")
+        banka = c3.text_input("Banka")
+        not_ = c3.text_input("Açıklama")
         
-        if submit:
-            new_row = pd.DataFrame([{
-                "Firma_Adi": firma,
-                "Evrak_Tipi": evrak,
-                "Banka": banka,
-                "Tutar": tutar,
-                "Vade": str(vade),
-                "Aciklama": aciklama
-            }])
-            updated_df = pd.concat([df, new_row], ignore_index=True)
-            conn.update(spreadsheet=edit_url, data=updated_df)
-            st.success(f"{firma} carisine evrak işlendi!")
-            st.cache_data.clear()
+        if st.form_submit_button("Kaydet"):
+            new_row = pd.DataFrame([{"Firma_Adi": firma, "Evrak_Tipi": evrak, "Banka": banka.upper(), "Tutar": tutar, "Vade": str(vade), "Aciklama": not_}])
+            df = pd.concat([df, new_row], ignore_index=True)
+            conn.update(spreadsheet=edit_url, data=df)
+            st.success("Kayıt Başarılı!")
             st.rerun()
-
-    # Kayıtları Listeleme
-    if not df.empty:
-        with st.expander("Son Kayıtları İncele / Sil"):
-            st.dataframe(df.tail(10)) # Son 10 kaydı göster
-            sil_idx = st.number_input("Silinecek Satır No", min_value=0, max_value=len(df)-1, step=1)
-            if st.button("Seçili Kaydı Sil"):
-                df = df.drop(sil_idx)
-                conn.update(spreadsheet=edit_url, data=df)
-                st.rerun()
 
 # --- PATRON PANELİ ---
 elif st.session_state.giris_turu == "PATRON":
-    st.title("📈 Cari Bazlı Analiz & Vade Takvimi")
+    st.title("📊 Finansal Durum & Banka Analizi")
     
     if not df.empty:
         df['Vade'] = pd.to_datetime(df['Vade'])
+        df['Tutar'] = pd.to_numeric(df['Tutar'])
         bugun = pd.to_datetime(datetime.now().date())
+        aktif_df = df[df['Vade'] >= bugun].copy()
         
-        # Filtreleme Seçenekleri
-        st.sidebar.header("Filtreler")
-        secili_firma = st.sidebar.selectbox("Cari Seçin", ["TÜMÜ"] + sorted(df['Firma_Adi'].unique().tolist()))
-        
-        # Veriyi Filtrele
+        # Filtre Paneli
+        secili_firma = st.sidebar.selectbox("Cari Filtresi", ["TÜMÜ"] + sorted(df['Firma_Adi'].unique().tolist()))
         if secili_firma != "TÜMÜ":
-            f_df = df[df['Firma_Adi'] == secili_firma].copy()
-        else:
-            f_df = df.copy()
-            
-        aktif_df = f_df[f_df['Vade'] >= bugun].copy()
-        
-        if not aktif_df.empty:
-            # --- HESAPLAMALAR ---
-            toplam_yuk = aktif_df['Tutar'].sum()
-            aktif_df['Gun'] = (aktif_df['Vade'] - bugun).dt.days
-            # Ağırlıklı Ortalama Vade Formülü: Sum(Tutar * Gün) / Sum(Tutar)
-            ort_gun = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / toplam_yuk
-            ort_vade_tarihi = bugun + pd.to_timedelta(round(ort_gun), unit='D')
-            
-            # --- METRİKLER ---
-            m1, m2, m3 = st.columns(3)
-            m1.metric(f"{secili_firma} Toplam", f"{toplam_yuk:,.2f} TL")
-            m2.metric("Ort. Vade (Gün)", f"{round(ort_gun)} Gün")
-            m3.metric("Ort. Vade Tarihi", ort_vade_tarihi.strftime('%d.%m.%Y'))
-            
-            # --- GRAFİKLER ---
-            st.subheader("Vade Dağılımı")
-            chart_data = aktif_df.groupby('Vade')['Tutar'].sum()
-            st.bar_chart(chart_data)
-            
-            # --- DETAYLI TABLO ---
-            st.subheader("Evrak Detayları")
-            st.table(aktif_df[['Firma_Adi', 'Banka', 'Evrak_Tipi', 'Tutar', 'Vade', 'Aciklama']].sort_values('Vade'))
-            
-        else:
-            st.info("Bu kriterlere uygun gelecek ödemesi bulunamadı.")
-    else:
-        st.warning("Veritabanı boş.")
+            aktif_df = aktif_df[aktif_df['Firma_Adi'] == secili_firma]
 
-if st.button("Çıkış Yap"):
+        if not aktif_df.empty:
+            # --- 1. METRİKLER ---
+            toplam_tutar = aktif_df['Tutar'].sum()
+            aktif_df['Gun'] = (aktif_df['Vade'] - bugun).dt.days
+            ort_gun = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / toplam_tutar
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Toplam Yük", f"{toplam_tutar:,.2f} TL")
+            m2.metric("Ağ. Ortalama Vade", f"{int(ort_gun)} Gün")
+            m3.metric("Evrak Sayısı", len(aktif_df))
+
+            st.divider()
+
+            # --- 2. BANKA DAĞILIMI (PASTA GRAFİK) ---
+            col_left, col_right = st.columns(2)
+            
+            with col_left:
+                st.subheader("🏦 Banka Bazlı Dağılım")
+                banka_df = aktif_df.groupby('Banka')['Tutar'].sum().reset_index()
+                fig_banka = px.pie(banka_df, values='Tutar', names='Banka', hole=0.4, 
+                                   color_discrete_sequence=px.colors.qualitative.Pastel)
+                st.plotly_chart(fig_banka, use_container_width=True)
+
+            with col_right:
+                st.subheader("📅 Vade Dilimleri (Risk Analizi)")
+                # Vade gruplama
+                bins = [0, 30, 60, 90, 180, 360, 1000]
+                labels = ['0-30 Gün', '31-60 Gün', '61-90 Gün', '91-180 Gün', '181-360 Gün', '360+ Gün']
+                aktif_df['Vade_Grubu'] = pd.cut(aktif_df['Gun'], bins=bins, labels=labels)
+                vade_grafik = aktif_df.groupby('Vade_Grubu', observed=True)['Tutar'].sum().reset_index()
+                fig_vade = px.bar(vade_grafik, x='Vade_Grubu', y='Tutar', color='Vade_Grubu', text_auto='.2s')
+                st.plotly_chart(fig_vade, use_container_width=True)
+
+            st.divider()
+            
+            # --- 3. DETAYLI LİSTE ---
+            st.subheader("📑 Aktif Evrak Listesi")
+            st.dataframe(aktif_df[['Firma_Adi', 'Banka', 'Evrak_Tipi', 'Tutar', 'Vade', 'Aciklama']].sort_values('Vade'), use_container_width=True)
+
+    else:
+        st.info("Henüz veri girilmemiş.")
+
+if st.sidebar.button("Güvenli Çıkış"):
     st.session_state.giris_turu = None
     st.rerun()
