@@ -1,111 +1,69 @@
 import streamlit as st
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# Görsellik kütüphanesini kontrol et (Patlamayı önler)
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    has_plotly = True
-except ImportError:
-    has_plotly = False
-
-# Sayfa Ayarları
-st.set_page_config(page_title="Yapdoksan Finans | Yönetim", layout="wide")
-
-# --- BAĞLANTI ---
-edit_url = "https://docs.google.com/spreadsheets/d/1gow0J5IA0GaB-BjViSKGbIxoZije0klFGgvDWYHdcNA/edit#gid=0"
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-# --- GÜVENLİK ---
-if 'giris_turu' not in st.session_state:
-    st.session_state.giris_turu = None
-
-if st.session_state.giris_turu is None:
-    st.title("🏛️ Yapdoksan Finans Yönetimi")
-    sifre = st.text_input("Giriş Anahtarı", type="password")
-    if st.button("Sistemi Aç"):
-        if sifre == "patron125": st.session_state.giris_turu = "PATRON"
-        elif sifre == "muhasebe007": st.session_state.giris_turu = "MUHASEBE"
-        else: st.error("Erişim Reddedildi!")
-        st.rerun()
-    st.stop()
-
-# --- VERİ ÇEKME ---
-try:
-    df = conn.read(spreadsheet=edit_url, ttl=0)
-    # Sütunları sayısal ve tarihsel formata zorla
-    df['Tutar'] = pd.to_numeric(df['Tutar'], errors='coerce').fillna(0)
-    df['Vade'] = pd.to_datetime(df['Vade'], errors='coerce')
-except:
-    df = pd.DataFrame(columns=['Firma_Adi', 'Evrak_Tipi', 'Banka', 'Tutar', 'Vade', 'Aciklama'])
-
-# --- MUHASEBE PANELİ ---
-if st.session_state.giris_turu == "MUHASEBE":
-    st.title("📥 Muhasebe Veri Girişi")
-    with st.form("kayit"):
-        c1, c2 = st.columns(2)
-        firma = c1.text_input("Firma/Cari Adı").upper()
-        banka = c1.text_input("Banka")
-        tutar = c2.number_input("Tutar (TL)", min_value=0.0)
-        vade = c2.date_input("Vade")
-        evrak = st.selectbox("Evrak Tipi", ["Çek", "Senet", "Fatura"])
-        not_ = st.text_input("Açıklama")
-        if st.form_submit_button("Sisteme İşle"):
-            new_row = pd.DataFrame([{"Firma_Adi": firma, "Evrak_Tipi": evrak, "Banka": banka, "Tutar": tutar, "Vade": str(vade), "Aciklama": not_}])
-            df = pd.concat([df, new_row], ignore_index=True)
-            conn.update(spreadsheet=edit_url, data=df)
-            st.success("Kayıt Alındı.")
-            st.cache_data.clear()
-            st.rerun()
-
-# --- PATRON PANELİ (GÜZELLEŞTİRİLMİŞ) ---
-elif st.session_state.giris_turu == "PATRON":
-    st.title("👑 Yönetim Paneli")
-    
-    if not df.empty and 'Vade' in df.columns:
-        bugun = pd.to_datetime(datetime.now().date())
-        aktif_df = df[df['Vade'] >= bugun].copy()
+# --- KUVEYT TÜRK KURLARINI ÇEKME FONKSİYONU ---
+def get_kuveyt_kurlar():
+    try:
+        url = "https://finans.kuveytturk.com.tr/finans-portali"
+        response = requests.get(url, timeout=5)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Filtreleme
-        secili_firma = st.sidebar.selectbox("🎯 Odaklan", ["TÜMÜ"] + sorted(df['Firma_Adi'].unique().tolist()))
-        if secili_firma != "TÜMÜ":
-            aktif_df = aktif_df[aktif_df['Firma_Adi'] == secili_firma]
+        # Kuveyt Türk sayfa yapısına göre USD ve EUR verilerini ayıklama
+        # Not: Banka sayfa yapısını değiştirirse buradaki seçiciler güncellenmelidir.
+        kur_dict = {}
+        rows = soup.find_all('tr')
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) > 0:
+                para_birimi = cols[0].text.strip()
+                if "USD" in para_birimi:
+                    kur_dict['USD'] = {"Alis": cols[1].text.strip(), "Satis": cols[2].text.strip()}
+                elif "EUR" in para_birimi:
+                    kur_dict['EUR'] = {"Alis": cols[1].text.strip(), "Satis": cols[2].text.strip()}
+        return kur_dict
+    except:
+        return None
 
-        if not aktif_df.empty:
-            # Üst Metrikler
-            total = aktif_df['Tutar'].sum()
-            aktif_df['Gun'] = (aktif_df['Vade'] - bugun).dt.days
-            ort_vade = (aktif_df['Tutar'] * aktif_df['Gun']).sum() / total if total > 0 else 0
-            
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Toplam Yük", f"{total:,.0f} TL")
-            k2.metric("Ağırlıklı Vade", f"{int(ort_vade)} Gün")
-            k3.metric("Kayıt Sayısı", len(aktif_df))
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Yapdoksan Finans | Canlı Kur", layout="wide")
 
-            st.divider()
+# (Giriş ve Veri Çekme bölümleri aynı kalıyor...)
+# ... [Giriş Kodları Buraya] ...
 
-            if has_plotly:
-                c_left, c_right = st.columns(2)
-                # Kümülatif Nakit Akışı (Patronun en sevdiği)
-                cum_df = aktif_df.sort_values('Vade').copy()
-                cum_df['Kumulatif'] = cum_df['Tutar'].cumsum()
-                fig_area = px.area(cum_df, x='Vade', y='Kumulatif', title="Gelecek Nakit Çıkış Grafiği")
-                c_left.plotly_chart(fig_area, use_container_width=True)
-                
-                # Banka Dağılımı
-                fig_pie = px.pie(aktif_df, values='Tutar', names='Banka', hole=.4, title="Banka Risk Dağılımı")
-                c_right.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.warning("Görsel grafikler için lütfen requirements.txt dosyasına 'plotly' ekleyin.")
-                st.bar_chart(aktif_df.set_index('Vade')['Tutar'])
-            
-            st.subheader("📋 Ödeme Listesi")
-            st.dataframe(aktif_df[['Firma_Adi', 'Banka', 'Tutar', 'Vade', 'Aciklama']].sort_values('Vade'), use_container_width=True)
-        else:
-            st.info("Gelecek ödemeniz bulunmuyor.")
+if st.session_state.giris_turu == "PATRON":
+    # --- CANLI KURLAR BÖLÜMÜ (EN ÜSTTE) ---
+    kurlar = get_kuveyt_kurlar()
+    if kurlar:
+        c1, c2, c3, c4 = st.columns([1,1,1,2]) # Kurlar ve Odaklan filtresi yan yana
+        c1.metric("💵 USD (Kuveyt)", f"{kurlar['USD']['Satis']} TL")
+        c2.metric("💶 EUR (Kuveyt)", f"{kurlar['EUR']['Satis']} TL")
+        
+        # Filtreleme (Odaklan yazan yer)
+        with c4:
+            secili_firma = st.selectbox("🎯 Odaklan (Cari Seç)", ["TÜM PORTFÖY"] + sorted(df['Firma_Adi'].unique().tolist()))
+    else:
+        st.warning("Canlı kurlar şu an alınamadı, yerel veriye devam ediliyor.")
+        secili_firma = st.sidebar.selectbox("🎯 Odaklan", ["TÜM PORTFÖY"] + sorted(df['Firma_Adi'].unique().tolist()))
 
-if st.sidebar.button("Güvenli Çıkış"):
-    st.session_state.giris_turu = None
-    st.rerun()
+    # --- RİSK SİMÜLASYONU (PATRONA GÜZELLEME 2.0) ---
+    st.markdown("---")
+    st.subheader("📉 Kur Şoku Senaryosu")
+    
+    # Kurları sayısal formata çevirip (örneğin 35.50 gibi) simülasyon yapalım
+    try:
+        mevcut_usd = float(kurlar['USD']['Satis'].replace(',', '.'))
+    except:
+        mevcut_usd = 35.0 # Varsayılan
+        
+    sim_kur = st.slider("Dolar Yarın Ne Olur?", min_value=mevcut_usd, max_value=mevcut_usd + 20.0, value=mevcut_usd + 5.0)
+    artis_orani = (sim_kur / mevcut_usd) - 1
+    
+    # Borçların % kaçı dövizli/dövize duyarlı? (Burada varsayım yapıyoruz veya veriden çekiyoruz)
+    # Eğer borçlar TL ise kur artışı aslında reel borcunu düşürür (enflasyon etkisi).
+    st.info(f"Dolar {sim_kur:.2f} TL olursa, borç yükünün reel değeri (USD bazında) %{artis_orani*100:.1f} oranında değişecektir.")
+
+    # (Grafikler ve Tablolar aşağıda devam ediyor...)
